@@ -1,4 +1,4 @@
 bin/
 obj/
-Fabric_Iter.depend
-Fabric_Iter.layout
+*.depend
+*.layout
