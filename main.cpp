@@ -9,6 +9,60 @@
 using namespace std;
 
 
+// ===================== Паттерн "Стратегия": способы запуска ракеты =====================
+
+// 1. Перечень способов запуска (можно расширять)
+enum class LaunchMannerEnum : int
+{
+    Vertical,    // вертикальный старт с наземной площадки
+    AirDrop,     // воздушный старт: ракета сбрасывается с самолёта-носителя
+    SeaPlatform, // старт с морской платформы
+
+    None
+};
+
+// 2. Абстрактная стратегия: общий интерфейс для всех способов запуска
+class LaunchStrategy
+{
+public:
+    virtual ~LaunchStrategy() {}
+    virtual void Launch() = 0; // "как именно стартуем"
+};
+
+// 3. Конкретные стратегии (каждая - один способ запуска)
+class VerticalLaunchStrategy : public LaunchStrategy
+{
+public:
+    void Launch() override { cout << "Vertical launch from the ground pad..."; }
+};
+
+class AirDropLaunchStrategy : public LaunchStrategy
+{
+public:
+    void Launch() override { cout << "Air launch: dropped from a carrier aircraft..."; }
+};
+
+class SeaPlatformLaunchStrategy : public LaunchStrategy
+{
+public:
+    void Launch() override { cout << "Launch from a floating sea platform..."; }
+};
+
+// 4. Фабричный метод для создания стратегий
+LaunchStrategy* CreateLaunchStrategy(LaunchMannerEnum manner)
+{
+    switch (manner)
+    {
+        case LaunchMannerEnum::Vertical:    return new VerticalLaunchStrategy;
+        case LaunchMannerEnum::AirDrop:     return new AirDropLaunchStrategy;
+        case LaunchMannerEnum::SeaPlatform: return new SeaPlatformLaunchStrategy;
+
+        default: return nullptr;
+    }
+}
+
+// ===================== Семейство ракет =====================
+
 class Rockets // Родительский (базовый) класс "ракеты"
 {
 private: // "Закрытые" компоненты (не доступны в унаследованных классах)
@@ -17,8 +71,25 @@ private: // "Закрытые" компоненты (не доступны в унаследованных классах)
     string FuelType;
     double MaxRange;
 
+    // [НОВОЕ] Стратегия запуска. Ракета владеет этим объектом и удаляет его в деструкторе.
+    LaunchStrategy* LaunchManner;
+
+    // [НОВОЕ] Один из шагов алгоритма Launch(): запуск выбранным способом (общий код)
+    void DoLaunchUsingStrategy();
+
 protected: // "Защищенные" компоненты (доступны в унаследованных классах, но не доступны внешнему наблюдателю)
     bool isReady;
+
+    // [НОВОЕ] Паттерн "Шаблонный метод": шаги алгоритмов Launch() и DisplayInfo().
+    // Общую структуру алгоритмов задаёт базовый класс, а эти шаги
+    // каждая ракета реализует по-своему (поэтому они чисто виртуальные).
+    virtual void PrintType() const = 0;     // вывести название типа ракеты
+    virtual void PrepareFlightPlan() = 0;   // шаг Launch(): вывести план полёта
+    virtual void PrintSpecificInfo() = 0;   // шаг DisplayInfo(): вывести данные, специфичные для типа
+
+    // [НОВОЕ] "Хук" (необязательный шаг): по умолчанию ничего не делает,
+    // наследник может переопределить, если ему нужно что-то сделать после запуска
+    virtual void AfterLaunch() {}
 
 public: // "Открытые" компоненты, определяющие интерфейс класса
 
@@ -31,15 +102,25 @@ public: // "Открытые" компоненты, определяющие интерфейс класса
     string GetFuelType() const { return FuelType; }
     double GetMaxRange() const { return MaxRange; }
 
-    // Функция с реализацией, которая может быть переопределена в унаследованном классе
-    virtual void Launch() = 0; // запуск ракеты
-    virtual double CalculateEfficiency() = 0; // эффективность
-    virtual void DisplayInfo() = 0; // вывод информации
+    // [НОВОЕ] Установить/снять признак "готова к запуску"
+    void SetReady(bool ready) { isReady = ready; }
 
+    // [НОВОЕ] Задать способ запуска: можно передать готовую стратегию...
+    void SetLaunchManner(LaunchStrategy* manner);
+    // ...а можно просто указать значение enum (стратегия создаётся фабричным методом)
+    void SetLaunchManner(LaunchMannerEnum manner);
+
+    // [ИЗМЕНЕНО] Launch() и DisplayInfo() больше НЕ виртуальные!
+    // Это шаблонные методы: структура алгоритма зафиксирована здесь, в базовом классе.
+    // Сигнатуры остались прежними, поэтому остальной код (ProcessAllRockets и др.) не менялся.
+    void Launch();      // запуск ракеты
+    void DisplayInfo(); // вывод информации
+
+    virtual double CalculateEfficiency() = 0; // эффективность
 };
 
 // Реализация конструктора
-Rockets::Rockets(double M, double C, const string& fuel, double range) : Mass(M), Capacity(C), FuelType(fuel), MaxRange(range), isReady(true)
+Rockets::Rockets(double M, double C, const string& fuel, double range) : Mass(M), Capacity(C), FuelType(fuel), MaxRange(range), LaunchManner(nullptr), isReady(true)
 {
     cout << "Creating rocket..." << endl;
 }
@@ -48,6 +129,84 @@ Rockets::Rockets(double M, double C, const string& fuel, double range) : Mass(M)
 Rockets::~Rockets()
 {
     cout << "Deleting rocket..." << endl;
+    delete LaunchManner; // стратегия принадлежит ракете, поэтому удаляем её здесь
+}
+
+void Rockets::SetLaunchManner(LaunchStrategy* manner)
+{
+    if (manner == LaunchManner) return;
+
+    delete LaunchManner; // старую стратегию удаляем, чтобы не было утечки памяти
+    LaunchManner = manner;
+}
+
+void Rockets::SetLaunchManner(LaunchMannerEnum manner)
+{
+    SetLaunchManner(CreateLaunchStrategy(manner));
+}
+
+void Rockets::DoLaunchUsingStrategy()
+{
+    if (LaunchManner == nullptr)
+    {
+        // Способ запуска не задан, ничего не делаем
+        cout << "No launch method selected!";
+        return;
+    }
+
+    LaunchManner->Launch(); // запуск выполняет стратегия (какая именно - базовый класс не знает)
+}
+
+// [НОВОЕ] ШАБЛОННЫЙ МЕТОД Launch(): общий "скелет" запуска для всех ракет
+void Rockets::Launch()
+{
+    // 1. Вывести название ракеты (шаг реализуется в наследнике)
+    PrintType();
+    cout << " : ";
+
+    // 2. Проверить готовность (общий код, одинаковый для всех ракет)
+    if (!isReady)
+    {
+        cout << "NOT READY, launch cancelled" << endl;
+        return;
+    }
+    cout << "READY : ";
+
+    // 3. Вывести план полёта (шаг реализуется в наследнике)
+    PrepareFlightPlan();
+    cout << " : ";
+
+    // 4. Запустить выбранным способом (стратегия)
+    DoLaunchUsingStrategy();
+
+    // 5. Хук: наследник может что-то сделать после запуска
+    AfterLaunch();
+
+    // 6. Конец алгоритма
+    cout << endl;
+}
+
+// [НОВОЕ] ШАБЛОННЫЙ МЕТОД DisplayInfo(): общий "скелет" вывода информации.
+// Раньше четыре одинаковые строки (масса, грузоподъёмность, топливо, дальность)
+// дублировались в каждом классе-наследнике, теперь они выводятся здесь один раз.
+void Rockets::DisplayInfo()
+{
+    // 1. Заголовок с названием типа (шаг реализуется в наследнике)
+    cout << "--- ";
+    PrintType();
+    cout << " ---" << endl;
+
+    // 2. Общие данные (одинаковые для всех ракет)
+    cout << "Mass: " << GetMass() << " t" << endl;
+    cout << "Capacity: " << GetCapacity() << " t" << endl;
+    cout << "Fuel: " << GetFuelType() << endl;
+    cout << "Range: " << GetMaxRange() << " ths. km" << endl;
+
+    // 3. Данные, специфичные для типа ракеты (шаг реализуется в наследнике)
+    PrintSpecificInfo();
+
+    // 4. Эффективность (тоже считается по-разному, но выводится одинаково)
+    cout << "Efficiency: " << CalculateEfficiency() << endl;
 }
 
 class OrbitalRocket : public Rockets // Класс-наследник "Орбитальная ракета"
@@ -55,23 +214,26 @@ class OrbitalRocket : public Rockets // Класс-наследник "Орбитальная ракета"
 private:
     double OrbitAltitude;
 
+protected:
+    // [ИЗМЕНЕНО] Вместо Launch() и DisplayInfo() реализуем только "шаги" алгоритмов
+    void PrintType() const override;
+    void PrepareFlightPlan() override;
+    void PrintSpecificInfo() override;
+
 public:
     OrbitalRocket(double M, double C, const string& fuel, double range, double alt);
     ~OrbitalRocket();
 
-    // Переопределение функции в унаследованном классе (функция не виртуальная!)
-    void Launch() override;
     double CalculateEfficiency() override;
-    void DisplayInfo() override;
-
-
 };
 
 // Реализация конструктора
-OrbitalRocket::OrbitalRocket(double M, double C, const string& fuel, double range, double alt) : Rockets(M, C, fuel, range), OrbitAltitude(alt) //
+OrbitalRocket::OrbitalRocket(double M, double C, const string& fuel, double range, double alt) : Rockets(M, C, fuel, range), OrbitAltitude(alt)
 {
-
     isReady = true; // Инициализация isReady через присваивание
+
+    // [НОВОЕ] Способ запуска по умолчанию для орбитальной ракеты
+    SetLaunchManner(LaunchMannerEnum::AirDrop);
 
     cout << "Creating OrbitalRocket..." << endl;
 }
@@ -82,9 +244,19 @@ OrbitalRocket::~OrbitalRocket()
     cout << "Deleting OrbitalRocket..." << endl;
 }
 
-void OrbitalRocket::Launch()
+void OrbitalRocket::PrintType() const
 {
-    cout << "Orbital rocket is launching! Into orbit altitude " << OrbitAltitude << " км." << endl;
+    cout << "OrbitalRocket";
+}
+
+void OrbitalRocket::PrepareFlightPlan()
+{
+    cout << "Target orbit altitude " << OrbitAltitude << " km";
+}
+
+void OrbitalRocket::PrintSpecificInfo()
+{
+    cout << "Orbit altitude: " << OrbitAltitude << " km" << endl;
 }
 
 double OrbitalRocket::CalculateEfficiency()
@@ -93,35 +265,30 @@ double OrbitalRocket::CalculateEfficiency()
     return (GetCapacity() / GetMass()) * (1.0 + OrbitAltitude / 1000.0);
 }
 
-void OrbitalRocket::DisplayInfo()
-{
-    cout << "--- OrbitalRocket---" << endl;
-    cout << "Mass: " << GetMass() << " t"<< endl;
-    cout << "Capacity: " << GetCapacity() << " t"<< endl;
-    cout << "Fuel: " << GetFuelType() << endl;
-    cout << "Range: " << GetMaxRange() << " ths. km"<< endl;
-    cout << "Orbit altitude: " << OrbitAltitude << " km"<< endl;
-    cout << "Efficiency: " << CalculateEfficiency() << endl;
-}
-
 class InterPlanetaryRocket : public Rockets
 {
 private:
     string DestinationPlanet;
     double RequiredV;
 
+protected:
+    void PrintType() const override;
+    void PrepareFlightPlan() override;
+    void PrintSpecificInfo() override;
+
 public:
     InterPlanetaryRocket(double M, double C, const string& fuel, double range, const string& planet, double V);
     ~InterPlanetaryRocket();
 
-    void Launch() override;
     double CalculateEfficiency() override;
-    void DisplayInfo() override;
 };
 
 InterPlanetaryRocket::InterPlanetaryRocket(double M, double C, const string& fuel, double range, const string& planet, double V) : Rockets(M, C, fuel, range), DestinationPlanet(planet), RequiredV(V)
 {
     isReady = true;
+
+    // [НОВОЕ] Способ запуска по умолчанию для межпланетной ракеты
+    SetLaunchManner(LaunchMannerEnum::Vertical);
 
     cout << "Creating InterPlanetaryRocket..." << endl;
 }
@@ -131,9 +298,20 @@ InterPlanetaryRocket::~InterPlanetaryRocket()
     cout << "Deleting InterPlanetaryRocket..." << endl;
 }
 
-void InterPlanetaryRocket::Launch()
+void InterPlanetaryRocket::PrintType() const
 {
-    cout << "Planetary rocket is launching! Destination planet " << DestinationPlanet << " Required speed " << RequiredV << " км/с." << endl;
+    cout << "InterPlanetaryRocket";
+}
+
+void InterPlanetaryRocket::PrepareFlightPlan()
+{
+    cout << "Destination " << DestinationPlanet << ", required speed " << RequiredV << " km/s";
+}
+
+void InterPlanetaryRocket::PrintSpecificInfo()
+{
+    cout << "Planet: " << DestinationPlanet << endl;
+    cout << "Speed: " << RequiredV << " km/s" << endl;
 }
 
 double InterPlanetaryRocket::CalculateEfficiency()
@@ -142,31 +320,25 @@ double InterPlanetaryRocket::CalculateEfficiency()
     return GetCapacity() / (GetMass() * RequiredV);
 }
 
-void InterPlanetaryRocket::DisplayInfo()
-{
-    cout << "--- InterPlanetaryRocket---" << endl;
-    cout << "Mass: " << GetMass() << " t"<< endl;
-    cout << "Capacity: " << GetCapacity() << " t"<< endl;
-    cout << "Fuel: " << GetFuelType() << endl;
-    cout << "Range: " << GetMaxRange() << " ths. km"<< endl;
-    cout << "Planet: " << DestinationPlanet << endl;
-    cout << "Speed: " << RequiredV << " km/s" << endl;
-    cout << "Efficiency: " << CalculateEfficiency() << endl;
-}
-
 class ReusableRocket : public Rockets
 {
 private:
     int FlightDone;
     int MaxFlights;
 
+protected:
+    void PrintType() const override;
+    void PrepareFlightPlan() override;
+    void PrintSpecificInfo() override;
+
+    // [НОВОЕ] Переопределяем хук: после каждого запуска увеличиваем счётчик полётов
+    void AfterLaunch() override;
+
 public:
     ReusableRocket(double M, double C, const string& fuel, double range, int maxFl);
     ~ReusableRocket();
 
-    void Launch() override;
     double CalculateEfficiency() override;
-    void DisplayInfo() override;
 
     // Метод для увеличения счетчика полётов
     void IncrementFlights();
@@ -176,6 +348,9 @@ ReusableRocket::ReusableRocket(double M, double C, const string& fuel, double ra
 {
     isReady = true;
 
+    // [НОВОЕ] Способ запуска по умолчанию для многоразовой ракеты
+    SetLaunchManner(LaunchMannerEnum::SeaPlatform);
+
     cout << "Creating ReusableRocket..." << endl;
 }
 
@@ -184,9 +359,25 @@ ReusableRocket::~ReusableRocket()
     cout << "Deleting ReusableRocket..." << endl;
 }
 
-void ReusableRocket::Launch()
+void ReusableRocket::PrintType() const
 {
-    cout << "Reusable rocket is launching! Flight № " << (FlightDone + 1) << ". Max flights " << MaxFlights << endl;
+    cout << "ReusableRocket";
+}
+
+void ReusableRocket::PrepareFlightPlan()
+{
+    cout << "Flight #" << (FlightDone + 1) << " of " << MaxFlights;
+}
+
+void ReusableRocket::PrintSpecificInfo()
+{
+    cout << "Flights: " << FlightDone << endl;
+    cout << "Max Flights: " << MaxFlights << endl;
+}
+
+void ReusableRocket::AfterLaunch()
+{
+    IncrementFlights();
 }
 
 double ReusableRocket::CalculateEfficiency()
@@ -194,18 +385,6 @@ double ReusableRocket::CalculateEfficiency()
     // Эффективность повышается с каждым полётом
     double ReuseBonus = 1.0 + (static_cast<double>(FlightDone) / MaxFlights);
     return (GetCapacity() / GetMass()) * ReuseBonus;
-}
-
-void ReusableRocket::DisplayInfo()
-{
-    cout << "--- ReusableRocket---" << endl;
-    cout << "Mass: " << GetMass() << " t"<< endl;
-    cout << "Capacity: " << GetCapacity() << " t"<< endl;
-    cout << "Fuel: " << GetFuelType() << endl;
-    cout << "Range: " << GetMaxRange() << " ths. km"<< endl;
-    cout << "Flights: " << FlightDone << endl;
-    cout << "Max Flights: " << MaxFlights << endl;
-    cout << "Efficiency: " << CalculateEfficiency() << endl;
 }
 
 void ReusableRocket::IncrementFlights()
@@ -377,6 +556,23 @@ void ShowContainer(ContainerBase<Rockets*>* cont)
     delete it; // итератор создан через new - удаляем
 }
 
+// Запуск всех ракет из любого контейнера (аналог EatEmAll из примера преподавателя)
+void LaunchAllRockets(Iterator<Rockets*>* it)
+{
+    for (it->First(); !it->IsDone(); it->Next())
+    {
+        Rockets* current = it->GetCurrent();
+        current->Launch();
+    }
+}
+
+// Задать всем ракетам из контейнера один и тот же способ запуска
+void SetLaunchMannerForAll(Iterator<Rockets*>* it, LaunchMannerEnum manner)
+{
+    for (it->First(); !it->IsDone(); it->Next())
+        it->GetCurrent()->SetLaunchManner(manner);
+}
+
 // Освобождение памяти: удаляет все ракеты из любого нашего контейнера
 void DeleteRocketsFromContainer(ContainerBase<Rockets*>* cont)
 {
@@ -472,6 +668,37 @@ int main()
         new RocketEfficiencyDecorator(new RocketMassDecorator(adaptedIt, 500.0), 0.03);
     ProcessAllRockets(adaptedChainIt);
     delete adaptedChainIt; // adaptedIt удалять не надо: его удалит декоратор
+
+        // ---------- Задание 4: паттерны "Стратегия" и "Шаблонный метод" ----------
+    cout << endl << "=== Task 4: Strategy + Template Method ===" << endl;
+
+    // 4.1 Запуск всех ракет: у каждого типа свой способ запуска по умолчанию (стратегия)
+    cout << "-- Launch all (default strategies) --" << endl;
+    Iterator<Rockets*>* launchIt = rocketArray.GetIterator();
+    LaunchAllRockets(launchIt);
+    delete launchIt;
+
+    // 4.2 Смена стратегии во время работы программы: интерфейс ракет не менялся
+    cout << "-- Strategy changed at runtime: all rockets -> sea platform --" << endl;
+    Iterator<Rockets*>* setIt = rocketArray.GetIterator();
+    SetLaunchMannerForAll(setIt, LaunchMannerEnum::SeaPlatform);
+    delete setIt;
+
+    Iterator<Rockets*>* launchIt2 = rocketArray.GetIterator();
+    LaunchAllRockets(launchIt2);
+    delete launchIt2;
+
+    // 4.3 Шаблонный метод: общая проверка готовности работает для любой ракеты
+    cout << "-- Rocket that is not ready --" << endl;
+    rocketArray.GetElement(0)->SetReady(false);
+    rocketArray.GetElement(0)->Launch();
+
+    // 4.4 Шаблонный метод DisplayInfo(): у многоразовых ракет счётчик полётов вырос
+    // (хук AfterLaunch), а значит, выросла и эффективность
+    cout << "-- DisplayInfo() of reusable rockets after 2 launches --" << endl;
+    Iterator<Rockets*>* reusableIt = new RocketFuelDecorator(rocketArray.GetIterator(), "RP-1 + O2");
+    ProcessAllRockets(reusableIt);
+    delete reusableIt;
 
     // Очистка памяти
     DeleteRocketsFromContainer(&rocketStack);
