@@ -1,0 +1,9 @@
+# depslib dependency file v1.0
+1775200389 source:c:\users\Рустам\desktop\fabric_iter\main.cpp
+	<iostream>
+	<string>
+	<ctime>
+	"PatternTemplates.h"
+
+1775200321 c:\users\Рустам\desktop\fabric_iter\patterntemplates.h
+
